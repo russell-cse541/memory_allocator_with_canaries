@@ -119,7 +119,7 @@ void* mymalloc(size_t size) {
 void myfree(void* ptr) {
     Block* current = (Block*)((uint8_t*)ptr - sizeof(Block)); // Get the metadata block from the pointer
     current->free = 1; // Mark as free
-    current->size = current->actual_size; // Complete block is free 
+    // current->size = current->actual_size; // Complete block is free 
     attempt_merge_next_block(current); // Attempt to merge with the next block
     attempt_merge_prev_block(current);  // Attempt to merge with the previous block
 } // close myfree

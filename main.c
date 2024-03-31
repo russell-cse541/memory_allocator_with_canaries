@@ -27,8 +27,11 @@ int main() {
     char *ptr2 = (char*)MALLOC(50 * sizeof(char));
     strcpy(ptr2, "Hello, world!");
 
-    FREE(ptr2);
+ 
+   FREE(ptr2);
 
+    char *ptr5 = (char*)MALLOC(30 * sizeof(char));
+    strcpy(ptr5, "Hello, world!");
 
     double *ptr3 = (double*)MALLOC(sizeof(double));
     *ptr3 = 3.14;
