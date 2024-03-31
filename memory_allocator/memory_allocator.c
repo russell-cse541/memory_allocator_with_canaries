@@ -3,8 +3,17 @@
 #include <sys/mman.h>
 #include "memory_allocator.h"
 
+#ifdef USE_CANARIES
+    #define CANARY_VALUE 0xcafebabe // Define the canary value
+    #define CANARY_SIZE sizeof(uint32_t) // Define the size of the canary
+    #define CANARY_TYPE uint32_t // Define the type of the canary
+#else
+    #define CANARY_SIZE 0
+#endif
+
 typedef struct Block { // Block structure to hold metadata
-    size_t size; // Size of the block
+    size_t size; // Useablej size of the block
+    size_t actual_size; // Actual size of the block
     char free;  // 0=> Not free, 1=> Free
     struct Block* next; // Pointer to the next block
     struct Block* prev; // Pointer to the previous block
@@ -13,8 +22,6 @@ typedef struct Block { // Block structure to hold metadata
 
 static size_t MEMORY_SIZE = 0; // Total memory size
 static Block* head = NULL; // Head of the memory pool
-static size_t available_memory = 0;   // Quick reference to check if memory is available
-
 // Function to initialize the memory pool
 void initialize_memory_pool(size_t size) {
     MEMORY_SIZE = size; // Set the memory size
@@ -24,11 +31,11 @@ void initialize_memory_pool(size_t size) {
         exit(EXIT_FAILURE); // Exit the program
     }
     // Initialize the head block
-    head->size = MEMORY_SIZE - sizeof(Block); // Set the size of the block
+    head->size = MEMORY_SIZE - sizeof(Block) - 2 * CANARY_SIZE; // Set the size of the block
+    head->actual_size = head->size; // Actual size same as useable size
     head->free = 1; // Initially, all memory is free
     head->next = NULL; // Initial block as no next block
     head->prev = NULL; // Initial block as no previous block
-    available_memory = head->size; // Set available memory
 } // close initialize_memory_pool
 
 // Function to destroy the memory pool
@@ -39,16 +46,17 @@ void destroy_memory_pool() {
     }
 } // close destroy_memory_pool
 
+
+
 // Function to merge the next block if free
 static inline void attempt_merge_next_block(Block* current) {
     // Merge with the next block if it is free
     if (current->next && current->next->free) { //chedk if next is defined and free
-        current->size += sizeof(Block) + current->next->size; // combine two sizes
+        current->size += sizeof(Block) + current->next->size + 2 * CANARY_SIZE; // combine two sizes
         current->next = current->next->next; // update next to remove middle block
         if (current->next) { // check if next is defined
             current->next->prev = current; // Update previous pointer of the next block
         } 
-        available_memory += sizeof(Block); // reclaim space of removed metadata block
     }
 } // close attempt_merge_next_block
 
@@ -56,28 +64,39 @@ static inline void attempt_merge_next_block(Block* current) {
 static inline void attempt_merge_prev_block(Block* current) {
     // Merge with the previous block if it is free
     if (current->prev && current->prev->free) { // check if previous is defined and free
-        current->prev->size += sizeof(Block) + current->size; 
+        current->prev->size += sizeof(Block) + current->size + 2 * CANARY_SIZE; 
         current->prev->next = current->next; // Update next pointer of the previous block
         if (current->next) { // check if next is defined
             current->next->prev = current->prev; // Update previous pointer of the next block
         }
-        available_memory += sizeof(Block); // reclaim space of removed metadata block
     }
 } // close attempt_merge_prev_block
 
+// Function to get the ptr for where data starts in the block
+static void* set_size_return_data_ptr(Block* block, size_t size) {
+    block->size = size; // Set the size of the block
+    #ifdef USE_CANARIES
+        CANARY_TYPE* canary;
+        canary = (CANARY_TYPE*)((uint8_t*)block + sizeof(Block));
+        *canary = CANARY_VALUE;
+        canary = (CANARY_TYPE*)((uint8_t*)canary + CANARY_SIZE + size);
+        *canary = CANARY_VALUE;
+        return (void*)((uint8_t*)block + sizeof(Block) + CANARY_SIZE);
+    #else
+        return (void*)((uint8_t*)block + sizeof(Block));
+    #endif
+} // close get_data_pointer
+
 // Function to allocate memory from the pool
 void* mymalloc(size_t size) {
-    if (size == 0 || size > available_memory) { // quick check if size is feasible
-        return NULL;
-    }
     Block *current = head; // Start from the head
-    char wasBlockSplit = 0; // Flag to check if a free block was split
     while (current) { // Iterate through the blocks
-        if (current->free && current->size >= size) { //check if block is free and big enough
-            if (current->size > size + sizeof(Block)) { // Check if block can be split
-                wasBlockSplit = 1; // Set the split flag
-                Block *new_block = (Block*)((uint8_t*)current + sizeof(Block) + size); // Create a new block and account for metadata block size
-                new_block->size = current->size - size - sizeof(Block); // Set the size of the new block accounting for metadata block size
+        if (current->free && current->actual_size >= size) { //check if block is free and big enough
+            if (current->actual_size > size + sizeof(Block) + 2 * CANARY_SIZE) { // Check if block can be split
+                Block *new_block = (Block*)((uint8_t*)current + sizeof(Block) + size + 2 * CANARY_SIZE); // Create a new block and account for metadata block size
+                size_t new_block_size = current->actual_size - size - sizeof(Block) - 2 * CANARY_SIZE;
+                set_size_return_data_ptr(new_block, new_block_size); // Set the size of the new block accounting for metadata block size                
+                new_block->actual_size = new_block_size; // Set the actual size of the new block
                 new_block->free = 1; // Mark as free
                 new_block->next = current->next; // set pointer for new middle block
                 new_block->prev = current; // Set previous pointer for the new block
@@ -86,11 +105,10 @@ void* mymalloc(size_t size) {
                 }
                 current->next = new_block; // next is new middle block
                 current->size = size; // Set the size of the current block
+                current->actual_size = size; // Block was resized to be exact
             } // close if block can be split
             current->free = 0; // mark as not free
-            //update available memory - if block was not split, size may be too large
-            available_memory -= wasBlockSplit ? size + sizeof(Block) : current->size; 
-            return (void*)((uint8_t*)current + sizeof(Block)); // Return the pointer to the user
+            return set_size_return_data_ptr(current, size); // Return the pointer to the user
         } // close if block is free and big enough
         current = current->next; // Move to the next block in while search
     } // close while loop
@@ -101,7 +119,7 @@ void* mymalloc(size_t size) {
 void myfree(void* ptr) {
     Block* current = (Block*)((uint8_t*)ptr - sizeof(Block)); // Get the metadata block from the pointer
     current->free = 1; // Mark as free
-    available_memory += current->size; // Update available memory
+    current->size = current->actual_size; // Complete block is free 
     attempt_merge_next_block(current); // Attempt to merge with the next block
     attempt_merge_prev_block(current);  // Attempt to merge with the previous block
 } // close myfree

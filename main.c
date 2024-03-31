@@ -27,11 +27,14 @@ int main() {
     char *ptr2 = (char*)MALLOC(50 * sizeof(char));
     strcpy(ptr2, "Hello, world!");
 
-    FREE(ptr1);
+    FREE(ptr2);
 
 
     double *ptr3 = (double*)MALLOC(sizeof(double));
     *ptr3 = 3.14;
+
+
+    char *ptr4 = (char*)MALLOC(25 * sizeof(char));
 
     #ifdef USE_MY_MALLOC
     display_blocks();
